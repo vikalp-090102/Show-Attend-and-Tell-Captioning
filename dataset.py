@@ -13,7 +13,7 @@ def pil_loader(path):
         return img.convert('RGB')
 
 class ImageCaptionDataset(Dataset):
-    def __init__(self, transform, data_path, split_type='train', word2idx=None):
+    def __init__(self, transform, data_path, split_type='train', word2idx=None, min_word_freq=5):
         super(ImageCaptionDataset, self).__init__()
         self.split_type     = split_type
         self.transform      = transform
@@ -31,60 +31,69 @@ class ImageCaptionDataset(Dataset):
         # 2) Extract (filename, caption) pairs, flattening out any numbered impressions
         self.img_paths = []
         self.captions  = []
+        raw_captions = []
+
         for _, row in merged.iterrows():
             fn  = row['filename']
             imp = row['impression']
             if not isinstance(imp, str) or pd.isna(imp):
                 continue
 
-            # Strip leading "1. " or "2. " if present
             m = re.match(r'^\d+\.', imp)
             cap = imp.split('. ', 1)[1] if m else imp
 
             full_img_path = os.path.join(data_path, 'images', 'images_normalized', fn)
             self.img_paths.append(full_img_path)
-            
-            # Update word counts for vocabulary building
+            raw_captions.append(cap)
+
             for w in cap.lower().split():
                 self.word_count[w] += 1
 
-            # If a vocabulary is provided, encode caption to token IDs; otherwise, store raw text.
-            if self.word2idx is not None:
-                encoded = self._encode_caption(cap)
-                self.captions.append(encoded)
-            else:
-                self.captions.append(cap)
+        # 3) Auto-vocab if not provided
+        if self.word2idx is None:
+            self.word2idx = self._build_vocab(min_word_freq)
+        
+        # 4) Encode captions
+        for cap in raw_captions:
+            self.captions.append(self._encode_caption(cap))
 
-        # 3) Build a lookup: image_path -> indices of all associated captions
+        # 5) Build caption lookup
         for idx, p in enumerate(self.img_paths):
             self.caption_img_idx.setdefault(p, []).append(idx)
 
+    def _build_vocab(self, min_word_freq):
+        """
+        Build vocabulary dictionary from word frequency count.
+        """
+        word2idx = {
+            '<pad>': 0,
+            '<start>': 1,
+            '<end>': 2,
+            '<unk>': 3
+        }
+        idx = 4
+        for word, count in self.word_count.items():
+            if count >= min_word_freq:
+                word2idx[word] = idx
+                idx += 1
+        print(f"Built vocabulary of size: {len(word2idx)}")
+        return word2idx
+
     def _encode_caption(self, caption):
-        """
-        Encode a caption string into a list of integer token IDs.
-        This method assumes that a word2idx mapping is available.
-        It converts the caption to lowercase, splits it into tokens,
-        prepends a '<start>' token and appends an '<end>' token.
-        Unknown words are mapped to the token ID for '<unk>'.
-        """
         tokens = caption.lower().split()
         tokens = ['<start>'] + tokens + ['<end>']
-        # Use the provided vocabulary; if a token isn't found, fallback to '<unk>'
-        return [self.word2idx.get(token, self.word2idx.get('<unk>', 0)) for token in tokens]
+        return [self.word2idx.get(token, self.word2idx['<unk>']) for token in tokens]
 
     def __getitem__(self, index):
         img_path = self.img_paths[index]
         img = pil_loader(img_path)
         if self.transform is not None:
             img = self.transform(img)
-        # Ensure the image is a torch.Tensor (convert if needed)
         img_tensor = img if isinstance(img, torch.Tensor) else torch.FloatTensor(img)
 
         if self.split_type == 'train':
-            # For training, return a single image/caption pair.
             return img_tensor, self.captions[index]
-
-        # For validation/testing, also retrieve all captions associated with the image.
+        
         all_idxs     = self.caption_img_idx[img_path]
         all_captions = [self.captions[i] for i in all_idxs]
         return img_tensor, self.captions[index], all_captions
