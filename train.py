@@ -76,7 +76,12 @@ def main(args):
         counter = Counter()
         for cap in train_temp_ds.captions:
             # Captions here are raw strings (since no vocabulary is provided yet)
-            counter.update(cap.lower().split())
+            # counter.update(cap.lower().split())
+            if isinstance(cap, str):
+                counter.update(cap.lower().split())
+            elif isinstance(cap, list):
+                counter.update(cap)
+
         tokens = list(counter.keys())
         # Reserve special tokens; adjust these as needed.
         vocab = ["<pad>", "<start>", "<end>", "<unk>"] + sorted(tokens)
